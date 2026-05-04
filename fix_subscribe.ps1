@@ -1,0 +1,3 @@
+$content = Get-Content "C:\Users\kainm\Projects\MaiPlay\supabase\functions\subscribe_to_creator\index.ts" -Raw
+$content = $content.Replace("serve(async (req) => {", "serve(async (req) => {`n  // Handle CORS preflight requests`n  if (req.method === `"OPTIONS"`) {`n    return new Response(null, {`n      status: 200,`n      headers: {`n        `"Access-Control-Allow-Origin`": `"*"`,`n        `"Access-Control-Allow-Methods`": `"POST, OPTIONS"`,`n        `"Access-Control-Allow-Headers`": `"Authorization, Content-Type, apikey"`,`n      },`n    })`n  }`n")
+Set-Content -Path "C:\Users\kainm\Projects\MaiPlay\supabase\functions\subscribe_to_creator\index.ts" -Value $content

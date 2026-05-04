@@ -1,0 +1,146 @@
+import { serve } from "https://deno.land/std@0.168.0/http/server.ts"
+import { createClient } from "https://esm.sh/@supabase/supabase-js@2"
+
+const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!
+const SUPABASE_SERVICE_ROLE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!
+
+serve(async (req) => {\n  // Handle CORS preflight requests\n  if (req.method === "OPTIONS") {\n    return new Response(null, {\n      status: 200,\n      headers: {\n        "Access-Control-Allow-Origin": "*",\n        "Access-Control-Allow-Methods": "POST, OPTIONS",\n        "Access-Control-Allow-Headers": "Authorization, Content-Type, apikey",\n      },\n    })\n  }\n
+  if (req.method !== "POST") {
+    return new Response(JSON.stringify({ error: "Method not allowed" }), { status: 405, headers: { "Content-Type": "application/json" } })
+  }
+
+  try {
+    const authHeader = req.headers.get("Authorization")
+    if (!authHeader?.startsWith("Bearer ")) {
+      return new Response(JSON.stringify({ error: "Unauthorized" }), { status: 401, headers: { "Content-Type": "application/json" } })
+    }
+
+    const token = authHeader.slice(7)
+    const body = await req.json()
+    const { creator_id, tier_id } = body ?? {}
+
+    if (!creator_id || !tier_id) {
+      return new Response(JSON.stringify({ error: "creator_id and tier_id are required" }), { status: 400, headers: { "Content-Type": "application/json" } })
+    }
+
+    const admin = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, { auth: { autoRefreshToken: false, persistSession: false } })
+
+    const { data: authData, error: authError } = await admin.auth.getUser(token)
+    if (authError || !authData.user) {
+      return new Response(JSON.stringify({ error: "Invalid token" }), { status: 401, headers: { "Content-Type": "application/json" } })
+    }
+
+    const authUserId = authData.user.id
+    const { data: payer, error: payerError } = await admin
+      .from("mai_accounts")
+      .select("id")
+      .eq("user_id", authUserId)
+      .single()
+
+    if (payerError || !payer) {
+      return new Response(JSON.stringify({ error: "Mai account not found" }), { status: 404, headers: { "Content-Type": "application/json" } })
+    }
+
+    if (payer.id === creator_id) {
+      return new Response(JSON.stringify({ error: "Cannot subscribe to yourself" }), { status: 400, headers: { "Content-Type": "application/json" } })
+    }
+
+    const { data: tier, error: tierError } = await admin
+      .from("creator_subscription_tiers")
+      .select("id, creator_id, price_coins, is_active")
+      .eq("id", tier_id)
+      .single()
+
+    if (tierError || !tier) {
+      return new Response(JSON.stringify({ error: "Tier not found" }), { status: 404, headers: { "Content-Type": "application/json" } })
+    }
+
+    if (!tier.is_active || tier.creator_id !== creator_id) {
+      return new Response(JSON.stringify({ error: "Tier inactive or creator mismatch" }), { status: 400, headers: { "Content-Type": "application/json" } })
+    }
+
+    const { data: wallet, error: walletErr } = await admin
+      .from("mai_wallets")
+      .select("mai_coins, lifetime_spent")
+      .eq("user_id", payer.id)
+      .single()
+
+    if (walletErr || !wallet) {
+      return new Response(JSON.stringify({ error: "Wallet not found" }), { status: 404, headers: { "Content-Type": "application/json" } })
+    }
+
+    if (wallet.mai_coins < tier.price_coins) {
+      return new Response(JSON.stringify({ error: "Insufficient coins", required: tier.price_coins, balance: wallet.mai_coins }), { status: 400, headers: { "Content-Type": "application/json" } })
+    }
+
+    const nowIso = new Date().toISOString()
+    const { data: existing } = await admin
+      .from("user_subscriptions")
+      .select("id, end_date, status")
+      .eq("user_id", payer.id)
+      .eq("creator_id", creator_id)
+      .maybeSingle()
+
+    const newEnd = existing?.status === "active" && existing.end_date > nowIso
+      ? new Date(new Date(existing.end_date).getTime() + 30 * 24 * 60 * 60 * 1000).toISOString()
+      : new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString()
+
+    const startDate = existing?.status === "active" && existing.end_date > nowIso ? existing.end_date : nowIso
+
+    const { error: walletUpdateError } = await admin
+      .from("mai_wallets")
+      .update({
+        mai_coins: wallet.mai_coins - tier.price_coins,
+        lifetime_spent: (wallet.lifetime_spent ?? 0) + tier.price_coins,
+        updated_at: nowIso,
+      })
+      .eq("user_id", payer.id)
+      .eq("mai_coins", wallet.mai_coins)
+
+    if (walletUpdateError) {
+      return new Response(JSON.stringify({ error: "Wallet update failed" }), { status: 409, headers: { "Content-Type": "application/json" } })
+    }
+
+    const { error: txErr } = await admin
+      .from("subscription_transactions")
+      .insert({ user_id: payer.id, creator_id, tier_id: tier.id, coins_spent: tier.price_coins, renewal_cycle_started_at: nowIso })
+
+    if (txErr) {
+      return new Response(JSON.stringify({ error: txErr.message }), { status: 500, headers: { "Content-Type": "application/json" } })
+    }
+
+    const payload = {
+      user_id: payer.id,
+      creator_id,
+      tier_id: tier.id,
+      start_date: startDate,
+      end_date: newEnd,
+      auto_renew: true,
+      status: "active",
+      updated_at: nowIso,
+    }
+
+    const { data: sub, error: subErr } = await admin
+      .from("user_subscriptions")
+      .upsert(payload, { onConflict: "user_id,creator_id" })
+      .select("*")
+      .single()
+
+    if (subErr) {
+      return new Response(JSON.stringify({ error: subErr.message }), { status: 500, headers: { "Content-Type": "application/json" } })
+    }
+
+    await admin.from("mai_coin_transactions").insert({
+      user_id: payer.id,
+      amount: -tier.price_coins,
+      transaction_type: "subscription_purchase",
+      source: "subscription",
+      metadata: { creator_id, tier_id: tier.id },
+    })
+
+    return new Response(JSON.stringify({ success: true, subscription: sub }), { status: 200, headers: { "Content-Type": "application/json" } })
+  } catch (error) {
+    return new Response(JSON.stringify({ error: error instanceof Error ? error.message : "Unknown error" }), { status: 500, headers: { "Content-Type": "application/json" } })
+  }
+})
+

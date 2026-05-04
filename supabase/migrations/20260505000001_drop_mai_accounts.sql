@@ -1,0 +1,2 @@
+-- Final cleanup: Drop profiles table (run this after all code is updated)
+-- DROP TABLE IF EXISTS profiles CASCADE;

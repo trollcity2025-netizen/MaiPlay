@@ -1,0 +1,8 @@
+{
+  "name": "admin-delete-video",
+  "version": "1.0.0",
+  "dependencies": {
+    "@mux/mux-node": "^2.5.0",
+    "@supabase/supabase-js": "^2.43.0"
+  }
+}
