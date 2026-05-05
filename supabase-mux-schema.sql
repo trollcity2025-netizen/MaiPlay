@@ -537,6 +537,9 @@ create policy "Users can view their own daily login rewards" on mai_daily_login_
 create policy "Users can view their own MAI coin transactions" on mai_coin_transactions
   for select using (current_mai_account_id() = user_id);
 
+create policy "Users can insert their own MAI coin transactions" on mai_coin_transactions
+  for insert with check (current_mai_account_id() = user_id);
+
 -- Helper function to get video feed (public ready videos)
 create or replace function get_video_feed(
   p_cursor timestamptz default null,

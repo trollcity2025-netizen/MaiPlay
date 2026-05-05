@@ -4,6 +4,7 @@ import { Card } from '../components/ui/card'
 import { Button } from '../components/ui/button'
 import { PayPalButtons } from '@paypal/react-paypal-js'
 import { useQueryClient } from '@tanstack/react-query'
+import { useAuthAccount } from '../auth/AuthAccountProvider'
 import {
   Check,
   Coins,
@@ -41,70 +42,19 @@ export function StorePage() {
   const [message, setMessage] = useState<string | null>(null)
   const [processingPerk, setProcessingPerk] = useState(false)
   const queryClient = useQueryClient()
+  const { account, loading } = useAuthAccount()
 
   const handleCoinPurchase = async (pack: CoinPack, orderId: string, details: any) => {
     setMessage('Processing your payment...')
 
-    const { data: authData, error: authError } = await supabase.auth.getUser()
-    if (authError || !authData.user) {
-      setMessage('Sign in again to complete the purchase.')
-      return
-    }
-
     try {
-      // 1. Record the transaction
-      const { error: txError } = await supabase.from('mai_coin_transactions').insert({
-        user_id: authData.user.id,
-        amount: pack.coins,
-        transaction_type: 'purchase',
-        source: 'paypal',
-        metadata: {
-          orderId,
-          coins: pack.coins,
-          packName: pack.name,
-          tier: pack.tier,
-          paypalStatus: details.status,
-        },
+      const packId = `${pack.tier}-${pack.coins}`
+      const { error } = await supabase.functions.invoke('verify_paypal_payment', {
+        body: { orderId, packId },
       })
 
-      if (txError) throw txError
+      if (error) throw error
 
-      // 2. Get or create wallet, then credit coins
-      const { data: wallet, error: walletError } = await supabase
-        .from('mai_wallets')
-        .select('*')
-        .eq('user_id', authData.user.id)
-        .maybeSingle()
-
-      if (walletError && walletError.code !== 'PGRST116') throw walletError
-
-      if (wallet) {
-        // Update existing wallet
-        const { error: updateError } = await supabase
-          .from('mai_wallets')
-          .update({
-            mai_coins: wallet.mai_coins + pack.coins,
-            lifetime_earned: wallet.lifetime_earned + pack.coins,
-            updated_at: new Date().toISOString(),
-          })
-          .eq('id', wallet.id)
-
-        if (updateError) throw updateError
-      } else {
-        // Create new wallet
-        const { error: createError } = await supabase.from('mai_wallets').insert({
-          user_id: authData.user.id,
-          mai_coins: pack.coins,
-          lifetime_earned: pack.coins,
-          lifetime_spent: 0,
-          created_at: new Date().toISOString(),
-          updated_at: new Date().toISOString(),
-        })
-
-        if (createError) throw createError
-      }
-
-      // 3. Invalidate cache and show success
       queryClient.invalidateQueries({ queryKey: ['mai-wallet'] })
       queryClient.invalidateQueries({ queryKey: ['mai-transactions'] })
       setMessage(
@@ -119,98 +69,41 @@ export function StorePage() {
   const handlePerkPayPalPurchase = async (orderId: string, details: any) => {
     setMessage('Activating your VIP + Offline perk...')
 
-    const { data: authData, error: authError } = await supabase.auth.getUser()
-    if (authError || !authData.user) {
-      setMessage('Sign in again to complete the perk purchase.')
-      return
-    }
+    try {
+      const { error } = await supabase.functions.invoke('verify_paypal_perk', {
+        body: { orderId },
+      })
 
-    const expiresAt = new Date()
-    expiresAt.setDate(expiresAt.getDate() + VIP_PERK.durationDays)
+      if (error) throw error
 
-    const { error } = await supabase.from('user_perks').insert({
-      user_id: authData.user.id,
-      perk_key: VIP_PERK.id,
-      perk_name: VIP_PERK.name,
-      status: 'active',
-      source: 'paypal',
-      price_usd: VIP_PERK.priceUsd,
-      coin_price: null,
-      starts_at: new Date().toISOString(),
-      expires_at: expiresAt.toISOString(),
-      metadata: {
-        orderId,
-        paypalStatus: details.status,
-        offline_downloads: true,
-        vip_creator_dm: true,
-        creator_dm_limit: VIP_PERK.creatorDmLimit,
-        creator_payout_usd: VIP_PERK.creatorPayoutUsd,
-        user_price_usd: VIP_PERK.priceUsd,
-      },
-    })
-
-    if (error) {
+      queryClient.invalidateQueries({ queryKey: ['user-perks'] })
+      setMessage('VIP + Offline activated for 30 days.')
+    } catch (error: any) {
       console.error(error)
       setMessage('Payment succeeded, but perk activation failed. Please contact support.')
-      return
     }
-
-    queryClient.invalidateQueries({ queryKey: ['user-perks'] })
-    setMessage('VIP + Offline activated for 30 days.')
   }
 
   const handlePerkCoinPurchase = async () => {
     setProcessingPerk(true)
     setMessage('Activating perk with MAI coins...')
 
-    const { data: authData, error: authError } = await supabase.auth.getUser()
-    if (authError || !authData.user) {
-      setMessage('Sign in again to complete the perk purchase.')
-      setProcessingPerk(false)
-      return
-    }
+    try {
+      const { error } = await supabase.functions.invoke('purchase_perk_with_coins', {
+        body: {},
+      })
 
-    const expiresAt = new Date()
-    expiresAt.setDate(expiresAt.getDate() + VIP_PERK.durationDays)
+      if (error) throw error
 
-    /*
-      Kilo should replace this with an RPC that atomically:
-      1. checks paid coin balance
-      2. deducts VIP_PERK.coinPrice
-      3. creates user_perks row
-      4. creates mai_coin_transactions row
-    */
-
-    const { error } = await supabase.from('user_perks').insert({
-      user_id: authData.user.id,
-      perk_key: VIP_PERK.id,
-      perk_name: VIP_PERK.name,
-      status: 'active',
-      source: 'coins',
-      price_usd: null,
-      coin_price: VIP_PERK.coinPrice,
-      starts_at: new Date().toISOString(),
-      expires_at: expiresAt.toISOString(),
-      metadata: {
-        offline_downloads: true,
-        vip_creator_dm: true,
-        creator_dm_limit: VIP_PERK.creatorDmLimit,
-        creator_payout_usd: VIP_PERK.creatorPayoutUsd,
-        user_price_usd: VIP_PERK.priceUsd,
-      },
-    })
-
-    if (error) {
+      queryClient.invalidateQueries({ queryKey: ['user-perks'] })
+      queryClient.invalidateQueries({ queryKey: ['mai-wallet'] })
+      setMessage('VIP + Offline activated for 30 days using MAI coins.')
+    } catch (error: any) {
       console.error(error)
-      setMessage('Perk purchase failed. Make sure user_perks exists and coin deduction is wired.')
+      setMessage('Perk purchase failed. Please try again.')
+    } finally {
       setProcessingPerk(false)
-      return
     }
-
-    queryClient.invalidateQueries({ queryKey: ['user-perks'] })
-    queryClient.invalidateQueries({ queryKey: ['mai-wallet'] })
-    setMessage('VIP + Offline activated for 30 days using MAI coins.')
-    setProcessingPerk(false)
   }
 
   const handlePayPalError = (error: unknown) => {
@@ -327,6 +220,7 @@ export function StorePage() {
 
                     <div className="mt-5 overflow-hidden rounded-xl">
                       <PayPalButtons
+                        disabled={loading || !account}
                         style={{
                           layout: 'vertical',
                           color: 'gold',
@@ -433,6 +327,7 @@ export function StorePage() {
 
                 <div className="overflow-hidden rounded-2xl">
                   <PayPalButtons
+                    disabled={loading || !account}
                     style={{
                       layout: 'vertical',
                       color: 'gold',

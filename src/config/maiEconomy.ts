@@ -15,6 +15,7 @@ export interface CashoutTier {
 }
 
 export const MAI_COIN_PACKS: CoinPack[] = [
+  { tier: 'Core', name: 'Tiny Tip', coins: 1, priceUsd: 0.01, bonusLabel: 'No bonus' },
   { tier: 'Core', name: 'Starter Pack', coins: 100, priceUsd: 0.99, bonusLabel: 'No bonus' },
   { tier: 'Core', name: 'Starter Pack', coins: 550, priceUsd: 4.99, bonusLabel: '+10% bonus' },
   { tier: 'Core', name: 'Starter Pack', coins: 1200, priceUsd: 9.99, bonusLabel: '+20% bonus' },

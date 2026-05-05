@@ -10,7 +10,7 @@ const PAYPAL_CLIENT_ID = Deno.env.get('PAYPAL_CLIENT_ID')!
 const PAYPAL_CLIENT_SECRET = Deno.env.get('PAYPAL_CLIENT_SECRET')!
 
 async function getPayPalAccessToken(): Promise<string> {
-  const response = await fetch('https://api.paypal.com/v1/oauth2/token', {
+  const response = await fetch('https://api-m.paypal.com/v1/oauth2/token', {
     method: 'POST',
     headers: {
       'Accept': 'application/json',
@@ -56,7 +56,7 @@ serve(async (req) => {
 
   // Call PayPal Payouts API
   const accessToken = await getPayPalAccessToken()
-  const paypalResponse = await fetch('https://api.paypal.com/v1/payments/payouts', {
+  const paypalResponse = await fetch('https://api-m.paypal.com/v1/payments/payouts', {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
